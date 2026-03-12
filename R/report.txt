@@ -1,3 +1,0 @@
-First of all we load the dataset. 
-
-This dataset consists of 
