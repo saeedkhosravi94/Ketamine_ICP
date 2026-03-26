@@ -3,3 +3,8 @@
 .RData
 .Ruserdata
 data
+
+Python/__pycache__/
+Python/venv/
+Python/.vscode/
+Python/.idea/
