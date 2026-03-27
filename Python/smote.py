@@ -11,6 +11,8 @@ class SASMOTE:
         random_state=None,
         rf_n_estimators=100,
         rf_max_depth=None,
+        n_to_generate=None,
+
     ):
         self.minority_class = minority_class
         self.k_neighbors = k_neighbors
@@ -18,6 +20,7 @@ class SASMOTE:
         self.rf_n_estimators = rf_n_estimators
         self.rf_max_depth = rf_max_depth
         self.rng = np.random.default_rng(random_state)
+        self.n_to_generate = n_to_generate
 
     def _validate_input(self, X, y):
         X = np.asarray(X, dtype=np.float32)
@@ -168,7 +171,11 @@ class SASMOTE:
         if n_min < 2:
             raise ValueError("Not enough minority samples to apply SASMOTE.")
 
-        n_to_generate = n_maj - n_min
+        if self.n_to_generate is not None:
+            n_to_generate = self.n_to_generate
+        else:
+            n_to_generate = n_maj - n_min
+
         if n_to_generate <= 0:
             return X.copy(), y.copy()
 
@@ -185,5 +192,5 @@ class SASMOTE:
         X_syn_filtered, y_syn_filtered = self._filter_synthetic_samples(
             X_syn, X_min, X_maj, minority_class, majority_class, y.dtype
         )
-
+        print(f"Generated {len(X_syn)} synthetic samples, {len(X_syn_filtered)} retained after filtering.")
         return self._combine_data(X, y, X_syn_filtered, y_syn_filtered)

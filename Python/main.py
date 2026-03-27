@@ -11,7 +11,7 @@ runner = ExperimentRunner(
     device_type="GPU"
 )
 
-result = runner.run("impute_5_sig_pca_0.95_stats_pca_0.95_SASMOTE")
+result = runner.run("impute_5_sig_pca_0.95_stats_pca_0.95_SASMOTE_15000")
 
 plot_roc_curves(
     result["roc_entries"],
@@ -26,18 +26,3 @@ save_results_to_csv(
 plot_dolan_more(result["perf_profile_data"], title=f'Performance Profile - {result["experiment_name"]}')
 
 
-
-
-result2 = runner.run("impute_5_sig_pca_0.95_stats_pca_0.95_no_SASMOTE")
-
-plot_roc_curves(
-    result2["roc_entries"],
-    title=f'ROC Curve Comparison - {result2["experiment_name"]}'
-)
-
-save_results_to_csv(
-    result2["results_table"],
-    filepath=f'{result2["experiment_name"]}_results.csv'
-)
-
-plot_dolan_more(result2["perf_profile_data"], title=f'Performance Profile - {result2["experiment_name"]}')
