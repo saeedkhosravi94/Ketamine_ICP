@@ -11,7 +11,7 @@ runner = ExperimentRunner(
     device_type="GPU"
 )
 
-result = runner.run("impute_5_sig_pca_0.95_stats_pca_0.95_SASMOTE_15000")
+result = runner.run("impute_5_cnn_bilstm_attention_SASMOTE_k100_300")
 
 plot_roc_curves(
     result["roc_entries"],

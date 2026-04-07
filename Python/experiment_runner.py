@@ -1,3 +1,5 @@
+# experiment_runner.py
+
 import pandas as pd
 from sklearn.model_selection import StratifiedKFold
 
@@ -103,6 +105,9 @@ class ExperimentRunner:
                 cv_epochs=dl_cfg.get("cv_epochs", 15),
                 final_epochs=dl_cfg.get("final_epochs", 20),
                 batch_size=dl_cfg.get("batch_size", 64),
+                optimizer=dl_cfg.get("optimizer", "adam"),
+                loss_name=dl_cfg.get("loss_name", "binary_crossentropy"),
+                loss_params=dl_cfg.get("loss_params", {}),
                 threshold=dl_cfg.get("threshold", 0.5)
             )
             results_table += dl_results

@@ -1,3 +1,5 @@
+# models.py
+
 from copy import deepcopy
 import time
 import numpy as np
@@ -5,8 +7,9 @@ import tensorflow as tf
 
 from tqdm.auto import tqdm
 from tensorflow.keras.callbacks import Callback
+from tensorflow.keras.losses import BinaryFocalCrossentropy
 
-from sklearn.base import clone
+from sklearn.base import BaseEstimator, ClassifierMixin, clone
 from sklearn.ensemble import ExtraTreesClassifier
 from sklearn.linear_model import LogisticRegression
 from sklearn.discriminant_analysis import LinearDiscriminantAnalysis
@@ -23,9 +26,9 @@ from tensorflow.keras.models import Model, Sequential
 from tensorflow.keras.layers import (
     Input, Conv1D, MaxPooling1D, Flatten, Dense, Dropout,
     Add, LSTM, Bidirectional, GlobalAveragePooling1D,
-    MultiHeadAttention, LayerNormalization
+    MultiHeadAttention, LayerNormalization, BatchNormalization,
+    Activation, Softmax, Multiply, Lambda
 )
-
 
 class TqdmKerasCallback(Callback):
     def __init__(self, epochs, desc, colour="cyan"):
@@ -57,6 +60,113 @@ class TqdmKerasCallback(Callback):
     def on_train_end(self, logs=None):
         if self.pbar is not None:
             self.pbar.close()
+
+
+class FocalLossXGBClassifier(BaseEstimator, ClassifierMixin):
+    def __init__(
+        self,
+        focal_alpha=0.25,
+        focal_gamma=2.0,
+        focal_epsilon=1e-9,
+        threshold=0.5,
+        xgb_params=None
+    ):
+        self.focal_alpha = focal_alpha
+        self.focal_gamma = focal_gamma
+        self.focal_epsilon = focal_epsilon
+        self.threshold = threshold
+        self.xgb_params = {} if xgb_params is None else xgb_params
+        self.model_ = None
+        self.classes_ = np.array([0, 1])
+
+    @staticmethod
+    def _sigmoid(x):
+        x = np.clip(x, -50.0, 50.0)
+        return 1.0 / (1.0 + np.exp(-x))
+
+    def _focal_binary_objective(self, y_true, y_pred):
+        y_true = np.asarray(y_true, dtype=np.float32)
+        y_pred = np.asarray(y_pred, dtype=np.float32)
+
+        alpha = float(self.focal_alpha)
+        gamma = float(self.focal_gamma)
+        eps = float(self.focal_epsilon)
+
+        p = self._sigmoid(y_pred)
+        p = np.clip(p, eps, 1.0 - eps)
+
+        dldp = np.zeros_like(p, dtype=np.float32)
+        d2ldp2 = np.zeros_like(p, dtype=np.float32)
+
+        pos = y_true == 1
+        neg = ~pos
+
+        if np.any(pos):
+            p_pos = p[pos]
+            dldp[pos] = alpha * (
+                gamma * np.power(1.0 - p_pos, gamma - 1.0) * np.log(p_pos)
+                - np.power(1.0 - p_pos, gamma) / p_pos
+            )
+            d2ldp2[pos] = alpha * (
+                -gamma * (gamma - 1.0) * np.power(1.0 - p_pos, gamma - 2.0) * np.log(p_pos)
+                + 2.0 * gamma * np.power(1.0 - p_pos, gamma - 1.0) / p_pos
+                + np.power(1.0 - p_pos, gamma) / np.square(p_pos)
+            )
+
+        if np.any(neg):
+            p_neg = p[neg]
+            dldp[neg] = (1.0 - alpha) * (
+                -gamma * np.power(p_neg, gamma - 1.0) * np.log(1.0 - p_neg)
+                + np.power(p_neg, gamma) / (1.0 - p_neg)
+            )
+            d2ldp2[neg] = (1.0 - alpha) * (
+                -gamma * (gamma - 1.0) * np.power(p_neg, gamma - 2.0) * np.log(1.0 - p_neg)
+                + 2.0 * gamma * np.power(p_neg, gamma - 1.0) / (1.0 - p_neg)
+                + np.power(p_neg, gamma) / np.square(1.0 - p_neg)
+            )
+
+        dpdz = p * (1.0 - p)
+        d2pdz2 = dpdz * (1.0 - 2.0 * p)
+
+        grad = dldp * dpdz
+        hess = d2ldp2 * np.square(dpdz) + dldp * d2pdz2
+        hess = np.maximum(hess, eps)
+
+        return grad.astype(np.float32), hess.astype(np.float32)
+
+    def fit(self, X, y, sample_weight=None):
+        params = {
+            "objective": self._focal_binary_objective,
+            "eval_metric": "logloss",
+            "random_state": 42
+        }
+        params.update(self.xgb_params)
+
+        self.model_ = XGBClassifier(**params)
+        self.model_.fit(X, y, sample_weight=sample_weight)
+        self.classes_ = np.unique(y)
+        return self
+
+    def predict_proba(self, X):
+        raw_margin = self.model_.predict(X, output_margin=True)
+        prob_1 = self._sigmoid(raw_margin).astype(np.float32)
+        prob_0 = 1.0 - prob_1
+        return np.column_stack([prob_0, prob_1])
+
+    def predict(self, X):
+        prob_1 = self.predict_proba(X)[:, 1]
+        return (prob_1 >= self.threshold).astype(int)
+
+    def decision_function(self, X):
+        return self.model_.predict(X, output_margin=True)
+
+    @property
+    def feature_importances_(self):
+        return self.model_.feature_importances_
+
+    @property
+    def n_features_in_(self):
+        return self.model_.n_features_in_
 
 
 class ModelFactory:
@@ -125,6 +235,64 @@ class ModelFactory:
         o = Dense(1, activation='sigmoid')(x)
         return Model(i, o)
 
+    @staticmethod
+    def get_tf_loss(loss_name="binary_crossentropy", loss_params=None):
+        loss_params = loss_params or {}
+        loss_name = (loss_name or "binary_crossentropy").lower()
+
+        if loss_name in {"binary_crossentropy", "bce"}:
+            return "binary_crossentropy"
+
+        if loss_name in {"focal", "binary_focal", "binary_focal_crossentropy"}:
+            return BinaryFocalCrossentropy(
+                apply_class_balancing=loss_params.get("apply_class_balancing", False),
+                alpha=loss_params.get("alpha", 0.25),
+                gamma=loss_params.get("gamma", 2.0),
+                from_logits=loss_params.get("from_logits", False),
+                label_smoothing=loss_params.get("label_smoothing", 0.0),
+                reduction=loss_params.get("reduction", "sum_over_batch_size")
+            )
+
+        raise ValueError(f"Unknown loss_name: {loss_name}")
+    
+    def build_cnn_bilstm_attention(
+        self,
+        shape,
+        conv1_filters=64,
+        conv2_filters=128,
+        kernel_size=64,
+        pool_size=4,
+        bilstm_units=128,
+        dense_units=128,
+        dropout=0.3
+    ):
+        i = Input(shape=shape)
+
+        x = Conv1D(conv1_filters, kernel_size, strides=1, padding="same")(i)
+        x = Activation("relu")(x)
+        x = MaxPooling1D(pool_size=pool_size)(x)
+        x = BatchNormalization()(x)
+
+        x = Conv1D(conv2_filters, kernel_size, strides=1, padding="same")(x)
+        x = Activation("relu")(x)
+        x = MaxPooling1D(pool_size=pool_size)(x)
+        x = BatchNormalization()(x)
+
+        x = Bidirectional(LSTM(bilstm_units, return_sequences=True))(x)
+
+        score = Dense(1, activation="tanh")(x)
+        score = Lambda(lambda t: tf.squeeze(t, axis=-1))(score)
+        weights = Softmax(axis=1)(score)
+        weights = Lambda(lambda t: tf.expand_dims(t, axis=-1))(weights)
+        x = Multiply()([x, weights])
+
+        x = Flatten()(x)
+        x = Dense(dense_units, activation="relu")(x)
+        x = Dropout(dropout)(x)
+        o = Dense(1, activation="sigmoid")(x)
+
+        return Model(i, o)
+
     def get_sklearn_registry(self, w_ratio=1.0):
         return {
             "logreg": {
@@ -143,11 +311,19 @@ class ModelFactory:
                     n_jobs=-1
                 )
             },
+            "extra_trees": {
+                "display_name": "Extra Trees",
+                "estimator": ExtraTreesClassifier(
+                    class_weight='balanced',
+                    random_state=self.random_state,
+                    n_jobs=-1
+                )
+            },
             "xgb": {
                 "display_name": "XGBoost",
                 "estimator": XGBClassifier(
                     scale_pos_weight=w_ratio,
-                    eval_metric='logloss',
+                    eval_metric="logloss",
                     random_state=self.random_state
                 )
             },
@@ -155,14 +331,13 @@ class ModelFactory:
                 "display_name": "LightGBM",
                 "estimator": LGBMClassifier(
                     class_weight='balanced',
-                    verbosity=-1,
                     random_state=self.random_state
                 )
             },
             "catboost": {
                 "display_name": "CatBoost",
                 "estimator": CatBoostClassifier(
-                    auto_class_weights='Balanced',
+                    auto_class_weights="Balanced",
                     verbose=0,
                     random_state=self.random_state
                 )
@@ -174,29 +349,19 @@ class ModelFactory:
             "mlp": {
                 "display_name": "MLP",
                 "estimator": MLPClassifier(
-                    hidden_layer_sizes=(100, 50),
-                    max_iter=1000,
+                    max_iter=500,
                     random_state=self.random_state
                 )
             },
             "bayes_lr": {
-                "display_name": "Bayesian LR",
+                "display_name": "Bayesian Logistic Regression",
                 "estimator": LogisticRegression(
-                    solver='liblinear',
-                    penalty='l1',
-                    C=0.1,
                     class_weight='balanced',
+                    solver="liblinear",
+                    max_iter=5000,
                     random_state=self.random_state
                 )
-            },
-            "extra_trees": {
-                "display_name": "Extra Trees",
-                "estimator": ExtraTreesClassifier(
-                    n_estimators=300,
-                    random_state=self.random_state,
-                    n_jobs=-1
-                )
-            },
+            }
         }
 
     def get_dl_registry(self):
@@ -226,8 +391,13 @@ class ModelFactory:
                 "builder": self.build_attn_cnn,
                 "build_params": {}
             },
+            "cnn_bilstm_attention": {
+                "display_name": "CNN-BiLSTM-Attention",
+                "builder": self.build_cnn_bilstm_attention,
+                "build_params": {}
+            }
         }
-
+    
     def get_selected_sklearn_models(self, selected_models, params_by_model=None, w_ratio=1.0):
         registry = self.get_sklearn_registry(w_ratio=w_ratio)
         params_by_model = params_by_model or {}
@@ -236,6 +406,32 @@ class ModelFactory:
         for model_key in selected_models:
             if model_key not in registry:
                 raise ValueError(f"Unknown sklearn model key: {model_key}")
+
+            if model_key == "xgb" and params_by_model.get("xgb", {}).get("use_focal_loss", False):
+                xgb_cfg = deepcopy(params_by_model["xgb"])
+                focal_alpha = xgb_cfg.pop("focal_alpha", 0.25)
+                focal_gamma = xgb_cfg.pop("focal_gamma", 2.0)
+                focal_epsilon = xgb_cfg.pop("focal_epsilon", 1e-9)
+                threshold = xgb_cfg.pop("threshold", 0.5)
+                xgb_cfg.pop("use_focal_loss", None)
+
+                xgb_cfg.setdefault("random_state", self.random_state)
+                xgb_cfg.setdefault("eval_metric", "logloss")
+
+                estimator = FocalLossXGBClassifier(
+                    focal_alpha=focal_alpha,
+                    focal_gamma=focal_gamma,
+                    focal_epsilon=focal_epsilon,
+                    threshold=threshold,
+                    xgb_params=xgb_cfg
+                )
+
+                selected[model_key] = {
+                    "display_name": "XGBoost (Focal Loss)",
+                    "estimator": estimator
+                }
+                continue
+
             item = deepcopy(registry[model_key])
             estimator = clone(item["estimator"])
             if model_key in params_by_model:
@@ -415,7 +611,8 @@ class ModelFactory:
         final_epochs=20,
         batch_size=64,
         optimizer="adam",
-        loss="binary_crossentropy",
+        loss_name="binary_crossentropy",
+        loss_params=None,
         threshold=0.5
     ):
         if cv is None:
@@ -456,8 +653,9 @@ class ModelFactory:
                 y_tr, y_val = y_train.iloc[tr_idx], y_train.iloc[val_idx]
 
                 with tf.device(device):
+                    compiled_loss = self.get_tf_loss(loss_name=loss_name, loss_params=loss_params)
                     m = builder(input_shape, **build_params)
-                    m.compile(optimizer=optimizer, loss=loss)
+                    m.compile(optimizer=optimizer, loss=compiled_loss)
 
                     callbacks = []
                     if self.show_progress:
@@ -499,8 +697,9 @@ class ModelFactory:
             perf_profile_data[name] = cv_aucs
 
             with tf.device(device):
+                compiled_loss = self.get_tf_loss(loss_name=loss_name, loss_params=loss_params)
                 final_m = builder(input_shape, **build_params)
-                final_m.compile(optimizer=optimizer, loss=loss)
+                final_m.compile(optimizer=optimizer, loss=compiled_loss)
 
                 callbacks = []
                 if self.show_progress:
