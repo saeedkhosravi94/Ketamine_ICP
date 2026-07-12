@@ -7,11 +7,13 @@ import numpy as np
 from sklearn.metrics import roc_auc_score
 from sklearn.model_selection import StratifiedKFold
 from sklearn.base import clone
+from sklearn.metrics import f1_score, precision_score, recall_score
 
 def compute_weights(y):
     counts = pd.Series(y).value_counts()
     n, k = len(y), len(counts)
     return {c: n / (k * cnt) for c, cnt in counts.items()}
+
 
 def confusion_matrix(y_true, y_pred):
     from sklearn.metrics import confusion_matrix
@@ -49,4 +51,7 @@ def train_eval(model, train_data, test_data, kfolds=10):
         "mean_auc": float(np.mean(aucs)),
         "test_auc": float(round(roc_auc_score(y_test, proba), 3)),
         "test_confusion_matrix": confusion_matrix(y_test, pred),
+        "f1_score": f1_score(y_test, pred),
+        "precision": precision_score(y_test, pred),
+        "recall": recall_score(y_test, pred)
     }
