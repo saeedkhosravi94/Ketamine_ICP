@@ -1,2 +1,0 @@
-Model,Model_Key,Family,Train_mean_AUC,Train_std_AUC,Train_mean_time,Test_AUC,Test_Sensitivity,Test_Specificity,Test_TP,Test_TN,Test_FP,Test_FN,Test_time
-CNN-BiLSTM-Attention,cnn_bilstm_attention,deep_learning,0.9991158536135524,0.0002990628883452272,1839.640359020233,0.9707469223293999,0.9702368476210438,0.8111888111888111,4629,116,27,142,7353.590459108353

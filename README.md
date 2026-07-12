@@ -1,2 +1,0 @@
-# Ketamine_ICP
-
