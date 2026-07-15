@@ -1,2 +1,6 @@
 pandas
 scikit-learn
+torch
+xgboost
+tabpfn
+pycatch22

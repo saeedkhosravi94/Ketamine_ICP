@@ -17,10 +17,14 @@ def compute_weights(y):
 
 def confusion_matrix(y_true, y_pred):
     from sklearn.metrics import confusion_matrix
-    cm = confusion_matrix(y_true, y_pred)
+    # labels=[0, 1] pinned explicitly: without it, sklearn infers the label
+    # set from what's actually present, so a degenerate all-one-class
+    # prediction returns a 1x1 matrix instead of 2x2 and the indexing
+    # below crashes.
+    cm = confusion_matrix(y_true, y_pred, labels=[0, 1])
     return {"TN": int(cm[0, 0]), "FP": int(cm[0, 1]), "FN": int(cm[1, 0]), "TP": int(cm[1, 1])}
 
-def train_eval(model, train_data, test_data, kfolds=10):
+def train_eval(model, train_data, test_data, kfolds=10, threshold=0.5):
     X = train_data.drop(columns=["label"]).values
     y = train_data["label"].values
     skf = StratifiedKFold(n_splits=kfolds, shuffle=True, random_state=42)
@@ -39,19 +43,28 @@ def train_eval(model, train_data, test_data, kfolds=10):
     weights = compute_weights(y)
     sw = np.array([weights[c] for c in y])
     final_model = clone(model)
+    train_start_time = pd.Timestamp.now()
     final_model.fit(X, y, sample_weight=sw)
+    train_end_time = pd.Timestamp.now()
 
     X_test = test_data.drop(columns=["label"]).values
     y_test = test_data["label"].values
-    pred = final_model.predict(X_test)
+    test_start_time = pd.Timestamp.now()
     proba = final_model.predict_proba(X_test)[:, 1]
+    pred = (proba >= threshold).astype(int)
+    test_end_time = pd.Timestamp.now()
 
     return {
         "aucs": np.round(aucs, 3).tolist(),
         "mean_auc": float(np.mean(aucs)),
+        "train_time(sec)": (train_end_time - train_start_time).total_seconds(),
         "test_auc": float(round(roc_auc_score(y_test, proba), 3)),
         "test_confusion_matrix": confusion_matrix(y_test, pred),
         "f1_score": f1_score(y_test, pred),
         "precision": precision_score(y_test, pred),
-        "recall": recall_score(y_test, pred)
+        "recall": recall_score(y_test, pred),
+        "specificity": confusion_matrix(y_test, pred)["TN"] / (confusion_matrix(y_test, pred)["TN"] + confusion_matrix(y_test, pred)["FP"]),
+        "sensitivity": confusion_matrix(y_test, pred)["TP"] / (confusion_matrix(y_test, pred)["TP"] + confusion_matrix(y_test, pred)["FN"]),
+        "accuracy": (confusion_matrix(y_test, pred)["TP"] + confusion_matrix(y_test, pred)["TN"]) / len(y_test),
+        "pred_time(sec)": (test_end_time - test_start_time).total_seconds()
     }

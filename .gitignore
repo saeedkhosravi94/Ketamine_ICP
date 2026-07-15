@@ -1,1 +1,6 @@
 data
+venv 
+.venv
+.claude
+__pycache__
+test
